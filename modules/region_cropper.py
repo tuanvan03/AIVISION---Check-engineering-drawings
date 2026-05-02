@@ -173,8 +173,162 @@ def make_drawing_bounds(
 
 
 # ---------------------------------------------------------------------------
+# BBox Lookup (Self-Check support) — Req 2.1 – 2.8
+# ---------------------------------------------------------------------------
+
+def get_entity_bbox(handle: str, dxf_json: dict[str, Any]) -> "DXFRegion | None":
+    """
+    Look up a DXF entity by its handle and return its bounding box as a DXFRegion.
+
+    Searches dxf_json["entities"], dxf_json["dimensions"], and dxf_json["texts"].
+
+    Supported types:
+        LINE            → bbox from start/end  (Req 2.2)
+        ARC, CIRCLE     → bbox from center ± radius  (Req 2.3)
+        LWPOLYLINE, POLYLINE → bbox of all points/vertices  (Req 2.4)
+        DIMENSION       → bbox of defpoints + text_midpoint  (Req 2.5)
+        TEXT, MTEXT     → bbox from insert + height  (Req 2.6)
+
+    Args:
+        handle: DXF entity handle string (e.g. "A1F").
+        dxf_json: Parsed DXF data from dxf_parser.parse_dxf().
+
+    Returns:
+        DXFRegion with default padding, or None if handle not found.
+    """
+    # --- Search modelspace entities ---
+    for entity in dxf_json.get("entities", []):
+        if entity.get("handle") != handle:
+            continue
+        etype = entity.get("type", "")
+        try:
+            if etype == "LINE":
+                return _points_to_region([entity.get("start"), entity.get("end")])
+
+            if etype in ("ARC", "CIRCLE"):
+                center = entity.get("center")
+                radius = float(entity.get("radius", 0.0))
+                if center:
+                    cx, cy = float(center[0]), float(center[1])
+                    return DXFRegion(xmin=cx - radius, ymin=cy - radius,
+                                    xmax=cx + radius, ymax=cy + radius)
+
+            if etype in ("LWPOLYLINE", "POLYLINE"):
+                pts = entity.get("points") or entity.get("vertices") or []
+                return _points_to_region(pts)
+
+            if etype == "ELLIPSE":
+                center = entity.get("center")
+                major = entity.get("major_axis")
+                ratio = float(entity.get("ratio", 1.0))
+                if center and major:
+                    hm = (float(major[0]) ** 2 + float(major[1]) ** 2) ** 0.5
+                    hn = hm * ratio
+                    cx, cy = float(center[0]), float(center[1])
+                    return DXFRegion(xmin=cx - hm, ymin=cy - hn,
+                                    xmax=cx + hm, ymax=cy + hn)
+
+            # Generic fallback — INSERT, HATCH, etc.
+            insert = entity.get("insert")
+            if insert:
+                return _points_to_region([insert])
+
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("BBox error handle=%s type=%s: %s", handle, etype, exc)
+
+        return None  # Handle matched but geometry failed
+
+    # --- Search dimension entities (Req 2.5) ---
+    for dim in dxf_json.get("dimensions", []):
+        if dim.get("handle") != handle:
+            continue
+        pts = [
+            dim.get("defpoint"),
+            dim.get("defpoint2"),
+            dim.get("defpoint3"),
+            dim.get("defpoint4"),
+            dim.get("text_midpoint"),
+        ]
+        valid = [p for p in pts if p is not None]
+        return _points_to_region(valid) if valid else None
+
+    # --- Search text entities (Req 2.6) ---
+    for text in dxf_json.get("texts", []):
+        if text.get("handle") != handle:
+            continue
+        insert = text.get("insert")
+        height = float(text.get("height") or text.get("char_height") or 2.5)
+        width = float(text.get("width") or height * 10)
+        if insert:
+            x, y = float(insert[0]), float(insert[1])
+            return DXFRegion(xmin=x, ymin=y - height,
+                             xmax=x + width, ymax=y + height * 1.5)
+        return None
+
+    # Req 2.7: handle not found anywhere
+    logger.warning("Entity handle '%s' not found in dxf_json.", handle)
+    return None
+
+
+def get_union_bbox(handles: list[str], dxf_json: dict[str, Any]) -> "DXFRegion | None":
+    """
+    Compute the union bounding box for a list of entity handles.  (Req 2.8)
+
+    Calls get_entity_bbox() for each handle and expands the union region.
+
+    Args:
+        handles: List of DXF entity handle strings.
+        dxf_json: Parsed DXF data.
+
+    Returns:
+        Union DXFRegion (no extra padding applied here), or None if no valid
+        bbox found for any handle.
+    """
+    xmins, ymins, xmaxs, ymaxs = [], [], [], []
+    for h in handles:
+        bbox = get_entity_bbox(h, dxf_json)
+        if bbox is not None:
+            xmins.append(bbox.xmin)
+            ymins.append(bbox.ymin)
+            xmaxs.append(bbox.xmax)
+            ymaxs.append(bbox.ymax)
+
+    if not xmins:
+        logger.debug("No valid bboxes for handles: %s", handles)
+        return None
+
+    return DXFRegion(
+        xmin=min(xmins),
+        ymin=min(ymins),
+        xmax=max(xmaxs),
+        ymax=max(ymaxs),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+def _points_to_region(points: list) -> "DXFRegion | None":
+    """
+    Build a DXFRegion bounding box from a list of 2D/3D coordinate lists.
+
+    Ignores None entries and entries with fewer than 2 coordinates.
+    Returns None if no valid points are provided.
+    """
+    xs, ys = [], []
+    for pt in points:
+        if pt is None:
+            continue
+        try:
+            xs.append(float(pt[0]))
+            ys.append(float(pt[1]))
+        except (TypeError, IndexError, ValueError):
+            continue
+    if not xs:
+        return None
+    return DXFRegion(xmin=min(xs), ymin=min(ys), xmax=max(xs), ymax=max(ys))
+
 
 def _dxf_region_to_pixel_box(
     region: DXFRegion,

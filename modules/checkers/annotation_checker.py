@@ -5,7 +5,11 @@ Checks the presence and correctness of mandatory annotations:
 title block, scale, material, general tolerance, projection symbol.
 Uses RAG with ISO 7200 priority.
 
-Requirement: 6.1 – 6.6
+Returns a Structured_Checker_Result dict with keys:
+  - "detailed_analysis": list of {step, result, detail} dicts (step-by-step check results)
+  - "errors": list of confirmed error dicts with entity_handles, severity, iso_reference
+
+Requirement: 6.1 – 6.6, Self-Check Req 1.2, 1.5, 9.1 – 9.7
 """
 
 import logging
@@ -13,6 +17,7 @@ from typing import Any
 
 from modules.rag_engine import RAGEngine
 from modules.vlm_client import build_checker_prompt, call_vlm_with_image
+from modules.checkers.dimension_checker import _parse_checker_response
 
 logger = logging.getLogger(__name__)
 
@@ -23,15 +28,17 @@ def run_annotation_check(
     dxf_json: dict[str, Any],
     analysis_result: str,
     rag_engine: RAGEngine,
-) -> str:
+) -> tuple[dict[str, Any], str]:
     """
     Run the Annotation Checker sub-tool.
 
     Steps:
     1. Retrieve ISO 7200 relevant context from RAG engine.
     2. Build system + user prompt with annotation criteria for drawing type.
-    3. Send image + prompt to VLM.
-    4. Return Vietnamese-language annotation check report.
+    3. Send image + prompt to VLM requesting structured JSON output with
+       detailed_analysis (step-by-step) + errors list.
+    4. Parse response into Structured_Checker_Result; fallback to a single
+       warning step if VLM returns non-JSON (Req 1.5).
 
     Args:
         image_base64: Base64 PNG of the drawing.
@@ -41,7 +48,9 @@ def run_annotation_check(
         rag_engine: Initialized RAGEngine instance.
 
     Returns:
-        Vietnamese-language annotation check report string.
+        Tuple of:
+          - structured_result: dict with keys "detailed_analysis" and "errors"
+          - plain_text: Vietnamese annotation check report string
     """
     logger.info("Running Annotation Checker for drawing type: %s", drawing_type)
 
@@ -65,14 +74,23 @@ def run_annotation_check(
 
     # --- Step 3: Call VLM ---
     try:
-        result = call_vlm_with_image(
+        raw_result = call_vlm_with_image(
             system_prompt=system_prompt,
             user_message=user_message,
             image_base64=image_base64,
         )
     except RuntimeError as exc:
         logger.error("Annotation checker VLM call failed: %s", exc)
-        result = f"❌ Lỗi khi kiểm tra chú thích: {exc}"
+        error_msg = f"❌ Lỗi khi kiểm tra chú thích: {exc}"
+        return {"detailed_analysis": [], "errors": []}, error_msg
 
-    logger.info("Annotation check completed. Result length: %d chars", len(result))
-    return result
+    # --- Step 4: Parse structured JSON or fallback (Req 1.5) ---
+    structured, plain_text = _parse_checker_response(raw_result, checker_prefix="ann")
+
+    logger.info(
+        "Annotation check completed. Errors: %d, steps: %d, text length: %d chars",
+        len(structured.get("errors", [])),
+        len(structured.get("detailed_analysis", [])),
+        len(plain_text),
+    )
+    return structured, plain_text

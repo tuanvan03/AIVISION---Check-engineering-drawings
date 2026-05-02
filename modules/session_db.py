@@ -50,6 +50,7 @@ _KEY_ANALYSIS_RESULT = "db_analysis_result"
 _KEY_DIMENSION_RESULT = "db_dimension_result"
 _KEY_ANNOTATION_RESULT = "db_annotation_result"
 _KEY_STANDARD_RESULT = "db_standard_result"
+_KEY_SELF_CHECK_RESULT = "db_self_check_result"   # Self-Check node output
 _KEY_CHAT_HISTORY = "db_chat_history"
 _KEY_AWAITING_TYPE_CONFIRMATION = "db_awaiting_type_confirmation"
 _KEY_REVIEW_COMPLETE = "db_review_complete"
@@ -76,6 +77,7 @@ def init_session() -> None:
         _KEY_DIMENSION_RESULT: None,
         _KEY_ANNOTATION_RESULT: None,
         _KEY_STANDARD_RESULT: None,
+        _KEY_SELF_CHECK_RESULT: None,
         _KEY_CHAT_HISTORY: [],
         _KEY_AWAITING_TYPE_CONFIRMATION: False,
         _KEY_REVIEW_COMPLETE: False,
@@ -213,6 +215,17 @@ def get_standard_result() -> str | None:
     return st.session_state.get(_KEY_STANDARD_RESULT)
 
 
+# Self-Check result (Req 8.6)
+def save_self_check_result(result: dict[str, Any]) -> None:
+    """Persist the Self-Check node output (stats + verified errors)."""
+    st.session_state[_KEY_SELF_CHECK_RESULT] = result
+
+
+def get_self_check_result() -> dict[str, Any] | None:
+    """Return the Self-Check result dict, or None if not yet run."""
+    return st.session_state.get(_KEY_SELF_CHECK_RESULT)
+
+
 def save_review_complete(value: bool = True) -> None:
     st.session_state[_KEY_REVIEW_COMPLETE] = value
 
@@ -246,5 +259,6 @@ def clear_results() -> None:
     st.session_state[_KEY_DIMENSION_RESULT] = None
     st.session_state[_KEY_ANNOTATION_RESULT] = None
     st.session_state[_KEY_STANDARD_RESULT] = None
+    st.session_state[_KEY_SELF_CHECK_RESULT] = None
     st.session_state[_KEY_REVIEW_COMPLETE] = False
-    logger.info("Session: analysis and checker results cleared.")
+    logger.info("Session: analysis, checker, and self-check results cleared.")

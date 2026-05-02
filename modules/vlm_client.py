@@ -115,24 +115,45 @@ def call_vlm_with_image(
         },
     ]
 
-    try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
-        content = response.choices[0].message.content or ""
-        logger.info(
-            "VLM response: %d chars, model=%s, tokens=%d",
-            len(content),
-            model,
-            response.usage.total_tokens if response.usage else 0,
-        )
-        return content
-    except Exception as exc:
-        logger.error("VLM API call failed: %s", exc)
-        raise RuntimeError(f"Lỗi gọi VLM API: {exc}") from exc
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            content = response.choices[0].message.content or ""
+            
+            # Catch AI safety refusal
+            refusal_signatures = [
+                "I'm sorry, I can't assist with that",
+                "I am sorry, I can't assist with that",
+                "I cannot assist with that"
+            ]
+            if any(sig in content for sig in refusal_signatures):
+                logger.warning("VLM refusal detected (attempt %d/%d). Retrying...", attempt + 1, max_retries)
+                if attempt < max_retries - 1:
+                    continue
+                else:
+                    raise RuntimeError("VLM liên tục từ chối xử lý yêu cầu (Safety filter block).")
+
+            logger.info(
+                "VLM response: %d chars, model=%s, tokens=%d",
+                len(content),
+                model,
+                response.usage.total_tokens if response.usage else 0,
+            )
+            return content
+        except Exception as exc:
+            if attempt < max_retries - 1:
+                logger.warning("VLM API error (attempt %d/%d): %s. Retrying...", attempt + 1, max_retries, exc)
+                continue
+            logger.error("VLM API call failed: %s", exc)
+            raise RuntimeError(f"Lỗi gọi VLM API: {exc}") from exc
+    
+    return ""
 
 
 def call_text_llm(
@@ -164,19 +185,40 @@ def call_text_llm(
         {"role": "user", "content": user_message},
     ]
 
-    try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
-        content = response.choices[0].message.content or ""
-        logger.info("Text LLM response: %d chars, model=%s", len(content), model)
-        return content
-    except Exception as exc:
-        logger.error("Text LLM API call failed: %s", exc)
-        raise RuntimeError(f"Lỗi gọi LLM API: {exc}") from exc
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            content = response.choices[0].message.content or ""
+            
+            # Catch AI safety refusal
+            refusal_signatures = [
+                "I'm sorry, I can't assist with that",
+                "I am sorry, I can't assist with that",
+                "I cannot assist with that"
+            ]
+            if any(sig in content for sig in refusal_signatures):
+                logger.warning("Text LLM refusal detected (attempt %d/%d). Retrying...", attempt + 1, max_retries)
+                if attempt < max_retries - 1:
+                    continue
+                else:
+                    raise RuntimeError("LLM liên tục từ chối xử lý yêu cầu (Safety filter block).")
+
+            logger.info("Text LLM response: %d chars, model=%s", len(content), model)
+            return content
+        except Exception as exc:
+            if attempt < max_retries - 1:
+                logger.warning("Text LLM API error (attempt %d/%d): %s. Retrying...", attempt + 1, max_retries, exc)
+                continue
+            logger.error("Text LLM API call failed: %s", exc)
+            raise RuntimeError(f"Lỗi gọi LLM API: {exc}") from exc
+            
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +316,142 @@ def build_checker_prompt(
         f"```json\n{json.dumps(dxf_json.get('dimensions', [])[:30], ensure_ascii=False, indent=2)}\n```\n\n"
         f"**Dữ liệu chú thích từ DXF:**\n"
         f"```json\n{json.dumps(dxf_json.get('texts', [])[:30], ensure_ascii=False, indent=2)}\n```\n\n"
-        "Dựa trên ảnh bản vẽ và dữ liệu trên, hãy thực hiện kiểm tra chi tiết."
+        "Dựa trên ảnh bản vẽ và dữ liệu trên, hãy thực hiện kiểm tra chi tiết.\n\n"
+        "QUAN TRỌNG: Trả về kết quả theo định dạng JSON có cấu trúc sau:\n"
+        "```json\n"
+        "{\n"
+        '  "detailed_analysis": [\n'
+        "    {\n"
+        '      "step": "Tên mục kiểm tra (ví dụ: Kiểm tra tính đầy đủ của kích thước)",\n'
+        '      "result": "pass" hoặc "fail" hoặc "warning",\n'
+        '      "detail": "Mô tả chi tiết kết quả kiểm tra bước này bằng tiếng Việt"\n'
+        "    }\n"
+        "  ],\n"
+        '  "errors": [\n'
+        "    {\n"
+        '      "error_id": "dim_001",\n'
+        '      "severity": "high",\n'
+        '      "description": "Mô tả lỗi bằng tiếng Việt",\n'
+        '      "entity_handles": ["A1F", "B3C"],\n'
+        '      "iso_reference": "[ISO 129-1:2018] - Điều 6.2: Nội dung quy định"\n'
+        "    }\n"
+        "  ]\n"
+        "}\n"
+        "```\n"
+        "Nếu không có lỗi, trả về {\"detailed_analysis\": [...], \"errors\": []}.\n"
+        "detailed_analysis là bắt buộc — liệt kê MỀI bước kiểm tra với result (pass/fail/warning) và giải thích.\n"
+        "severity phải là một trong: \"high\", \"medium\", \"low\".\n"
+        "entity_handles là danh sách handle DXF của các entity liên quan (có thể rỗng [])."
+    )
+
+
+    return system_prompt, user_message
+
+
+# ---------------------------------------------------------------------------
+# Self-Check prompt and call (Req 4.1 – 4.6)
+# ---------------------------------------------------------------------------
+
+def build_self_check_prompt(
+    error_description: str,
+    iso_reference: str,
+    checker_type: str,
+) -> tuple[str, str]:
+    """
+    Build (system_prompt, user_message) for a Self-Check VLM call.
+
+    The prompt instructs the VLM to focus exclusively on the cropped region
+    and confirm whether the described error is actually present.
+
+    Args:
+        error_description: Vietnamese description of the error to verify.
+        iso_reference: ISO standard clause citation string.
+        checker_type: Checker label ("dimension", "annotation", or "standard").
+
+    Returns:
+        Tuple of (system_prompt, user_message).
+
+    Requirement: 4.1, 4.5, 4.6
+    """
+    # Use the centralized template from config (Req 4.6)
+    system_prompt = config.SYSTEM_PROMPT_SELF_CHECK.format(
+        error_description=error_description,
+        iso_reference=iso_reference,
+        checker_type=checker_type,
+    )
+
+    user_message = (
+        "Hãy quan sát ảnh bản vẽ được crop (vùng có thể chứa lỗi) và xác nhận:\n"
+        f"- Lỗi cần xác nhận: {error_description}\n"
+        f"- Tiêu chuẩn liên quan: {iso_reference}\n\n"
+        "Trả về JSON theo định dạng yêu cầu. Chỉ JSON, không thêm nội dung khác."
     )
 
     return system_prompt, user_message
+
+
+def call_vlm_for_self_check(
+    image_base64: str,
+    error_description: str,
+    iso_reference: str,
+    checker_type: str,
+) -> bool:
+    """
+    Call VLM with a cropped image to verify whether an error actually exists.
+
+    Sends the cropped region image + self-check prompt to GPT-4o and parses
+    the JSON response for the "confirmed" field.
+
+    Args:
+        image_base64: Base64-encoded PNG of the cropped region.
+        error_description: Vietnamese description of the error.
+        iso_reference: ISO standard citation.
+        checker_type: Checker label.
+
+    Returns:
+        True if VLM confirms the error exists (keep in report).
+        False if VLM says the error is a false positive (remove from report).
+        Defaults to True on any JSON parse failure (Req 4.4).
+
+    Requirement: 4.2, 4.3, 4.4
+    """
+    system_prompt, user_message = build_self_check_prompt(
+        error_description=error_description,
+        iso_reference=iso_reference,
+        checker_type=checker_type,
+    )
+
+    try:
+        raw_response = call_vlm_with_image(
+            system_prompt=system_prompt,
+            user_message=user_message,
+            image_base64=image_base64,
+            max_tokens=512,        # Self-check only needs a short JSON reply
+            temperature=0.0,
+        )
+    except RuntimeError as exc:
+        logger.warning("Self-check VLM call failed: %s — defaulting to confirmed=True", exc)
+        return True  # Req 4.4: keep error on failure
+
+    # Parse JSON response (Req 4.3)
+    try:
+        # Strip markdown code fences if present
+        cleaned = raw_response.strip()
+        if cleaned.startswith("```"):
+            lines = cleaned.split("\n")
+            cleaned = "\n".join(lines[1:-1] if lines[-1] == "```" else lines[1:])
+
+        data = json.loads(cleaned)
+        confirmed = bool(data.get("confirmed", True))
+        reasoning = data.get("reasoning", "")
+        logger.info(
+            "Self-check result: confirmed=%s, reasoning=%.100s", confirmed, reasoning
+        )
+        return confirmed
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.warning(
+            "Self-check JSON parse failed (%s); raw='%.200s' — defaulting to confirmed=True",
+            exc, raw_response,
+        )
+        return True  # Req 4.4: safe fallback
+

@@ -67,10 +67,18 @@ Hệ thống được nạp từ 7 tài liệu ISO gốc trong thư mục `docum
               │  ┌──────────────────────────┐ │
               │  │  Review Node (Tool 2)     │ │
               │  │  ┌──────────────────────┐│ │
-              │  │  │ Dimension Checker (2a)││ │  ← ISO 129
-              │  │  │ Annotation Checker(2b)││ │  ← ISO 7200
-              │  │  │ Standard Checker  (2c)││ │  ← ISO 1101 + ISO 128
+              │  │  │ Dimension Checker (2a)││ │  ← ISO 129  → Structured JSON
+              │  │  │ Annotation Checker(2b)││ │  ← ISO 7200 → Structured JSON
+              │  │  │ Standard Checker  (2c)││ │  ← ISO 1101 → Structured JSON
               │  │  └──────────────────────┘│ │
+              │  └────────────┬─────────────┘ │
+              │               ▼               │
+              │  ┌──────────────────────────┐ │
+              │  │  Self-Check Node         │ │
+              │  │  - Lookup entity handles  │ │  ← get_entity_bbox()
+              │  │  - Crop vùng lỗi (PNG)    │ │  ← crop_region()
+              │  │  - GPT-4o xác nhận lỗi   │ │  ← call_vlm_for_self_check()
+              │  │  - Lọc false positives    │ │
               │  └────────────┬─────────────┘ │
               │               ▼               │
               │  ┌──────────────────────────┐ │
@@ -108,25 +116,35 @@ Hệ thống được nạp từ 7 tài liệu ISO gốc trong thư mục `docum
 4. KIỂM TRA (Review Node — Tool 2, tuần tự)
    ├─► Dimension Checker (2a)
    │   └─► RAG query ISO 129 → ChromaDB → top-5 chunks
-   │       └─► GPT-4o: kiểm tra đầy đủ, nhất quán, định dạng kích thước
+   │       └─► GPT-4o: kiểm tra → Structured JSON {errors: [{error_id, severity,
+   │                                description, entity_handles, iso_reference}]}
    │
    ├─► Annotation Checker (2b)
    │   └─► RAG query ISO 7200 → ChromaDB → top-5 chunks
-   │       └─► GPT-4o: kiểm tra khung tên, tỷ lệ, vật liệu, dung sai chung
+   │       └─► GPT-4o: kiểm tra → Structured JSON (cùng schema)
    │
    └─► Standard Checker (2c)
        └─► RAG query ISO 1101 + ISO 128 → ChromaDB → top-5 chunks
-           └─► GPT-4o: kiểm tra GD&T, đường nét, ký hiệu bề mặt
+           └─► GPT-4o: kiểm tra → Structured JSON (cùng schema)
 
-5. BÁO CÁO
-   └─► Tổng hợp 3 kết quả → báo cáo có cấu trúc (tiếng Việt + trích dẫn ISO)
+5. XÁC MINH TỰ ĐỘNG (Self-Check Node) ← MỚI
+   Chỉ chạy khi entity count ≥ 200 (COMPLEXITY_THRESHOLD)
+   └─► Với mỗi lỗi severity "high" hoặc "medium" (tối đa 10 lỗi):
+       ├─► Tra entity_handles → tính union BBox trong tọa độ DXF
+       ├─► Region Cropper → crop PNG tại BBox với padding
+       ├─► GPT-4o với ảnh crop: "Lỗi X có thực sự tồn tại không?"
+       │   └─► Nhận: {confirmed: true/false, reasoning: "..."}
+       └─► False positive → loại khỏi báo cáo cuối
+
+6. BÁO CÁO
+   └─► Tổng hợp: bảng tóm tắt self-check + 3 phần lỗi đã xác minh
        └─► Hiển thị trong Chat Interface
 
-6. HỎI ĐÁP SAU ĐÁNH GIÁ
+7. HỎI ĐÁP SAU ĐÁNH GIÁ
    └─► Người dùng đặt câu hỏi về tiêu chuẩn
        └─► RAG Chat Node: truy xuất ChromaDB → trả lời có trích dẫn
 
-7. ĐÁNH GIÁ LẠI (nếu người dùng phản hồi)
+8. ĐÁNH GIÁ LẠI (nếu người dùng phản hồi)
    └─► Phát hiện từ khóa: "xem lại", "sai", "chỉnh", ...
        └─► Xóa kết quả cũ → chạy lại từ bước 3
 ```
@@ -372,11 +390,26 @@ Hệ thống scoring dựa trên keyword:
 - Format citation: `[ISO 129-1:2018] - Trang 12: Indication of dimensions`
 
 ### `modules/orchestrator.py`
-LangGraph `StateGraph` với 4 nodes:
+LangGraph `StateGraph` với 5 nodes:
 - `collect_info` → khi chưa có drawing type
 - `analysis` → Tool 1, phân tích tổng thể
-- `review` → Tool 2, chạy 3 sub-tools tuần tự
+- `review` → Tool 2, chạy 3 sub-tools tuần tự, trả **Structured JSON**
+- `self_check` → **[MỚI]** Xác minh từng lỗi high/medium bằng ảnh crop
 - `rag_chat` → hỏi đáp sau khi review xong
+
+**Topology:** `analysis → review → self_check → END`
+
+### `modules/region_cropper.py` *(đã mở rộng)*
+- `crop_region()`, `make_drawing_bounds()` — đã có từ trước
+- **[MỚI]** `get_entity_bbox(handle, dxf_json)` — tra cứu bounding box của entity theo handle
+  - Hỗ trợ: LINE, ARC, CIRCLE, LWPOLYLINE, POLYLINE, ELLIPSE, DIMENSION, TEXT/MTEXT
+- **[MỚI]** `get_union_bbox(handles, dxf_json)` — hợp nhất nhiều bbox thành một vùng
+
+### `modules/vlm_client.py` *(đã mở rộng)*
+- `call_vlm_with_image()`, `call_text_llm()` — đã có từ trước
+- `build_checker_prompt()` — **cập nhật** yêu cầu VLM trả Structured JSON
+- **[MỚI]** `build_self_check_prompt(error_description, iso_reference, checker_type)` — prompt xác minh
+- **[MỚI]** `call_vlm_for_self_check(image_base64, ...)` — gọi VLM, trả `bool` (confirmed/false positive)
 
 ---
 
@@ -398,7 +431,10 @@ LangGraph `StateGraph` với 4 nodes:
 | Dimension Checker | 15–25 giây |
 | Annotation Checker | 15–25 giây |
 | Standard Checker | 15–25 giây |
-| **Tổng kiểm tra đầy đủ** | **~1.5–2 phút** |
+| **Self-Check Node** | **0–60 giây** |
+| → Bỏ qua (< 200 entities) | 0 giây |
+| → Xác minh 10 lỗi high/medium | ~30–60 giây |
+| **Tổng kiểm tra đầy đủ** | **~1.5–3 phút** |
 
 ---
 

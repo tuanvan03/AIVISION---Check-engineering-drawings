@@ -99,6 +99,37 @@ SVG_DEFAULT_DPI: int = 150
 SVG_CROP_DPI: int = 300
 
 # ---------------------------------------------------------------------------
+# Self-Check Configuration (Req 5.1 – 5.5)
+# ---------------------------------------------------------------------------
+
+# Maximum number of errors to verify via self-check in a single run.
+# Prevents excessive VLM calls; high-severity errors are prioritized.
+SELF_CHECK_MAX_ERRORS: int = 10
+
+# System prompt template for Self-Check VLM calls.
+# Placeholders: {error_description}, {iso_reference}, {checker_type}
+SYSTEM_PROMPT_SELF_CHECK: str = """Bạn là chuyên gia kiểm tra bản vẽ kỹ thuật với nhiều năm kinh nghiệm.
+Bạn đang xem xét một VÙNG CỤ THỂ trong bản vẽ kỹ thuật (ảnh đã được crop và phóng to).
+
+Người dùng cần xác nhận xem lỗi sau đây có THỰC SỰ TỒN TẠI trong vùng ảnh này không:
+
+Loại lỗi: {checker_type}
+Mô tả lỗi: {error_description}
+Tiêu chuẩn liên quan: {iso_reference}
+
+Hãy quan sát KỸ LƯỠNG vùng ảnh và trả lời bằng JSON theo định dạng sau:
+{{
+  "confirmed": true/false,
+  "reasoning": "Giải thích ngắn gọn tại sao lỗi tồn tại hoặc không tồn tại trong vùng này (tiếng Việt)"
+}}
+
+Quy tắc:
+- Chỉ trả về JSON, không thêm nội dung khác
+- confirmed: true nếu lỗi CÓ tồn tại, false nếu KHÔNG tồn tại (false positive)
+- Nếu không chắc chắn, hãy trả về confirmed: true để tránh bỏ sót lỗi thực
+"""
+
+# ---------------------------------------------------------------------------
 # Prompts
 # ---------------------------------------------------------------------------
 
@@ -272,3 +303,25 @@ UI_REVIEW_HEADER: str = "🔍 Báo Cáo Kiểm Tra"
 UI_DIMENSION_HEADER: str = "📐 Kiểm Tra Kích Thước"
 UI_ANNOTATION_HEADER: str = "📝 Kiểm Tra Chú Thích"
 UI_STANDARD_HEADER: str = "📜 Kiểm Tra Tiêu Chuẩn Quốc Tế"
+
+# Self-Check section header in the final report (Req 5.3)
+UI_SELF_CHECK_HEADER: str = "🔎 Xác Minh Tự Động (Self-Check)"
+
+# Conclusion section constants (Req 10.5 – 10.6)
+UI_CONCLUSION_HEADER: str = "📊 Kết Luận & Gợi Ý"
+
+# Quality verdict templates — used in the conclusion section
+UI_CONCLUSION_GOOD: str = (
+    "✅ **Bản vẽ đạt yêu cầu cơ bản.** "
+    "Không phát hiện lỗi nghiêm trọng. Kiểm tra lại các lỗi mức trung bình (nếu có) trước khi phát hành."
+)
+UI_CONCLUSION_NEEDS_FIX: str = (
+    "⚠️ **Bản vẽ cần chỉnh sửa trước khi sử dụng.** "
+    "Có {high_count} lỗi nghiêm trọng cần được giải quyết ngay. "
+    "Xem xét kỹ từng lỗi và tham chiếu tiêu chuẩn ISO được trích dẫn."
+)
+UI_CONCLUSION_CRITICAL: str = (
+    "🔴 **Bản vẽ cần xem xét lại toàn bộ.** "
+    "Phát hiện {high_count} lỗi nghiêm trọng — bản vẽ chưa đáp ứng tiêu chuẩn. "
+    "Cần chỉnh sửa đáng kể trước khi sử dụng hoặc phát hành."
+)
