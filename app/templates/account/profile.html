@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block title %}Tài khoản — AI Vision Drawing Checker{% endblock %}
+
+{% block content %}
+<div class="profile-container">
+    <h1 class="profile-header">Thông tin tài khoản</h1>
+
+    {% if quota and not user.is_admin %}
+    <div class="quota-info">
+        <div>
+            <strong>Lượt phân tích hôm nay:</strong>
+            <span style="font-size:1.1rem; font-weight:700; color:var(--color-primary);">{{ quota.used }}/{{ quota.max }}</span>
+        </div>
+        <div class="quota-bar">
+            <!-- <div class="quota-bar-fill" style="width:{% if quota.max > 0 %}{{ (quota.used / quota.max * 100) }}{% else %}0{% endif %}%;"></div> -->
+            {% set percent = (quota.used / quota.max * 100) if quota.max > 0 else 0 %}
+            <div class="quota-bar-fill" style="width: {{ percent }}%;"></div>
+        </div>
+        <div style="font-size:0.8rem; color:var(--color-text-muted);">
+            Đặt lại lúc 00:00 ngày mai (UTC+7)
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="card profile-card">
+        <div class="card-header">Thông tin cá nhân</div>
+        <form id="profileForm">
+            <div class="form-group">
+                <label class="form-label">Email</label>
+                <input class="form-input" type="email" value="{{ user.email }}" disabled>
+                <p class="form-hint">Email không thể thay đổi.</p>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="display_name">Tên hiển thị</label>
+                <input class="form-input" type="text" id="display_name" name="display_name" value="{{ user.display_name }}" required>
+            </div>
+
+            <div style="display:flex; gap:0.5rem;">
+                <button type="submit" id="profileBtn" class="btn btn-primary">
+                    <span id="profileBtnText">Cập nhật</span>
+                    <span id="profileBtnSpinner" class="spinner hidden"></span>
+                </button>
+            </div>
+        </form>
+        <div id="profileMsg" class="hidden mt-1"></div>
+    </div>
+
+    <div class="card profile-card">
+        <div class="card-header">Đổi mật khẩu</div>
+        <form id="passwordForm">
+            <div class="form-group">
+                <label class="form-label" for="current_password">Mật khẩu hiện tại</label>
+                <input class="form-input" type="password" id="current_password" name="current_password" required autocomplete="current-password">
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="new_password">Mật khẩu mới</label>
+                <input class="form-input" type="password" id="new_password" name="new_password" required minlength="8" autocomplete="new-password">
+            </div>
+
+            <button type="submit" id="passwordBtn" class="btn btn-primary">
+                <span id="passwordBtnText">Đổi mật khẩu</span>
+                <span id="passwordBtnSpinner" class="spinner hidden"></span>
+            </button>
+        </form>
+        <div id="passwordMsg" class="hidden mt-1"></div>
+    </div>
+
+    <div class="card profile-card">
+        <div class="card-header">Thông tin tài khoản</div>
+        <table style="width:100%; font-size:0.85rem; border-collapse:collapse;">
+            <tr><td style="padding:0.3rem 0; color:var(--color-text-secondary);">Vai trò</td><td><strong>{{ user.role }}</strong></td></tr>
+            <tr><td style="padding:0.3rem 0; color:var(--color-text-secondary);">Ngày đăng ký</td><td>{{ user.created_at.strftime('%d/%m/%Y') if user.created_at else '—' }}</td></tr>
+            <tr><td style="padding:0.3rem 0; color:var(--color-text-secondary);">Trạng thái</td><td>{% if user.is_active %}<span style="color:var(--color-success);">Đang hoạt động</span>{% else %}<span style="color:var(--color-danger);">Đã bị khóa</span>{% endif %}</td></tr>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+(function() {
+    // Profile update
+    const profileForm = document.getElementById('profileForm');
+    profileForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const btn = document.getElementById('profileBtn');
+        const btnText = document.getElementById('profileBtnText');
+        const btnSpinner = document.getElementById('profileBtnSpinner');
+        const msgEl = document.getElementById('profileMsg');
+
+        btn.disabled = true;
+        btnText.classList.add('hidden');
+        btnSpinner.classList.remove('hidden');
+        msgEl.classList.add('hidden');
+
+        try {
+            const displayName = document.getElementById('display_name').value.trim();
+            await api.put('/api/v1/users/me', { display_name: displayName, avatar_url: null });
+            msgEl.classList.remove('hidden');
+            msgEl.className = 'auth-success mt-1';
+            msgEl.textContent = 'Cập nhật thành công!';
+            setTimeout(() => { window.location.reload(); }, 1000);
+        } catch (err) {
+            msgEl.classList.remove('hidden');
+            msgEl.className = 'auth-error mt-1';
+            msgEl.textContent = err.message || 'Không thể cập nhật';
+        } finally {
+            btn.disabled = false;
+            btnText.classList.remove('hidden');
+            btnSpinner.classList.add('hidden');
+        }
+    });
+
+    // Password change
+    const passwordForm = document.getElementById('passwordForm');
+    passwordForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const btn = document.getElementById('passwordBtn');
+        const btnText = document.getElementById('passwordBtnText');
+        const btnSpinner = document.getElementById('passwordBtnSpinner');
+        const msgEl = document.getElementById('passwordMsg');
+
+        if (typeof clearFieldErrors === 'function') {
+            clearFieldErrors(passwordForm);
+        }
+        passwordForm.querySelectorAll('.form-input').forEach(el => el.classList.remove('input-error'));
+
+        const currentPassword = document.getElementById('current_password').value;
+        const newPassword = document.getElementById('new_password').value;
+
+        if (newPassword.length < 8) {
+            document.getElementById('new_password').classList.add('input-error');
+            if (typeof showFieldError === 'function') {
+                showFieldError(document.getElementById('new_password'), 'Mật khẩu mới tối thiểu 8 ký tự');
+            }
+            return;
+        }
+
+        btn.disabled = true;
+        btnText.classList.add('hidden');
+        btnSpinner.classList.remove('hidden');
+        msgEl.classList.add('hidden');
+
+        try {
+            await api.post('/api/v1/users/me/change-password', {
+                current_password: currentPassword,
+                new_password: newPassword
+            });
+            msgEl.classList.remove('hidden');
+            msgEl.className = 'auth-success mt-1';
+            msgEl.textContent = 'Đổi mật khẩu thành công!';
+            passwordForm.reset();
+        } catch (err) {
+            msgEl.classList.remove('hidden');
+            msgEl.className = 'auth-error mt-1';
+            msgEl.textContent = err.message || 'Không thể đổi mật khẩu';
+        } finally {
+            btn.disabled = false;
+            btnText.classList.remove('hidden');
+            btnSpinner.classList.add('hidden');
+        }
+    });
+})();
+</script>
+{% endblock %}

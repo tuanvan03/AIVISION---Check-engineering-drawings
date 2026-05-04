@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+{% block title %}Quản lý người dùng — Admin{% endblock %}
+
+{% block content %}
+<div class="admin-layout">
+    <aside class="admin-sidebar">
+        <a href="/admin">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+            Dashboard
+        </a>
+        <a href="/admin/users" class="active">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+            Người dùng
+        </a>
+        <a href="/admin/logs">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+            Logs
+        </a>
+    </aside>
+
+    <div class="admin-content">
+        <h1 style="margin-bottom:1rem; font-size:1.3rem; font-weight:700;">Quản lý người dùng</h1>
+
+        <div class="filter-bar">
+            <input type="text" id="searchInput" placeholder="Tìm email hoặc tên..." style="flex:1; min-width:200px;">
+            <button id="searchBtn" class="btn btn-primary btn-sm">Tìm</button>
+        </div>
+
+        <div style="overflow-x:auto;">
+            <table class="history-table" id="usersTable">
+                <thead>
+                    <tr>
+                        <th>Email</th>
+                        <th>Tên</th>
+                        <th>Vai trò</th>
+                        <th>Ngày đăng ký</th>
+                        <th>Trạng thái</th>
+                        <th>Hành động</th>
+                    </tr>
+                </thead>
+                <tbody id="usersTableBody">
+                    <tr><td colspan="6"><div class="loading-state"><div class="spinner"></div><span>Đang tải...</span></div></td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="pagination hidden" id="usersPagination">
+            <button class="btn btn-outline btn-sm" id="usersPrev">← Trước</button>
+            <span id="usersPageInfo"></span>
+            <button class="btn btn-outline btn-sm" id="usersNext">Sau →</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+(function() {
+    const tbody = document.getElementById('usersTableBody');
+    const searchInput = document.getElementById('searchInput');
+    const searchBtn = document.getElementById('searchBtn');
+    const pagination = document.getElementById('usersPagination');
+    const prevBtn = document.getElementById('usersPrev');
+    const nextBtn = document.getElementById('usersNext');
+    const pageInfo = document.getElementById('usersPageInfo');
+
+    let currentPage = 1;
+    let currentSearch = '';
+    const pageSize = 20;
+
+    async function loadUsers(page, search) {
+        tbody.innerHTML = '<tr><td colspan="6"><div class="loading-state"><div class="spinner"></div></div></td></tr>';
+        pagination.classList.add('hidden');
+
+        let url = `/api/v1/admin/users?page=${page}&page_size=${pageSize}`;
+        if (search) url += `&search=${encodeURIComponent(search)}`;
+
+        try {
+            const users = await api.get(url);
+            if (!users.length) {
+                tbody.innerHTML = '<tr><td colspan="6"><div class="empty-state"><h3>Không tìm thấy người dùng</h3></div></td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = users.map(u => `
+                <tr>
+                    <td>${escapeHtml(u.email)}</td>
+                    <td>${escapeHtml(u.display_name)}</td>
+                    <td><span style="color:${u.role === 'admin' ? 'var(--color-danger)' : 'var(--color-primary)'}; font-weight:600;">${u.role}</span></td>
+                    <td>${formatDate(u.created_at)}</td>
+                    <td><span style="color:${u.is_active ? 'var(--color-success)' : 'var(--color-danger)'};">${u.is_active ? 'Hoạt động' : 'Bị khóa'}</span></td>
+                    <td style="white-space:nowrap;">
+                        <button class="btn btn-ghost btn-sm toggle-lock" data-id="${u.id}" data-active="${u.is_active}">${u.is_active ? 'Khóa' : 'Mở khóa'}</button>
+                        <button class="btn btn-ghost btn-sm change-role" data-id="${u.id}" data-role="${u.role}">Đổi role</button>
+                        <button class="btn btn-ghost btn-sm edit-quota" data-id="${u.id}">Quota</button>
+                    </td>
+                </tr>
+            `).join('');
+
+            pagination.classList.remove('hidden');
+            pageInfo.textContent = `Trang ${page}`;
+            prevBtn.classList.toggle('hidden', page <= 1);
+            nextBtn.classList.toggle('hidden', users.length < pageSize);
+
+            attachRowEvents();
+        } catch (err) {
+            tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state"><h3>Lỗi</h3><p>${escapeHtml(err.message)}</p></div></td></tr>`;
+        }
+    }
+
+    function attachRowEvents() {
+        tbody.querySelectorAll('.toggle-lock').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const userId = btn.dataset.id;
+                const isActive = btn.dataset.active === 'True';
+                const action = isActive ? 'lock' : 'unlock';
+                const confirmMsg = isActive ? `Bạn có chắc muốn khóa tài khoản này?` : `Bạn có chắc muốn mở khóa tài khoản này?`;
+                if (!confirm(confirmMsg)) return;
+                try {
+                    await api.post(`/api/v1/admin/users/${userId}/${action}`, {});
+                    showToast(isActive ? 'Đã khóa tài khoản' : 'Đã mở khóa tài khoản', 'success');
+                    loadUsers(currentPage, currentSearch);
+                } catch (err) {
+                    showToast(err.message, 'error');
+                }
+            });
+        });
+
+        tbody.querySelectorAll('.change-role').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const userId = btn.dataset.id;
+                const currentRole = btn.dataset.role;
+                const newRole = currentRole === 'admin' ? 'user' : 'admin';
+                if (!confirm(`Đổi role từ ${currentRole} sang ${newRole}?`)) return;
+                try {
+                    await api.put(`/api/v1/admin/users/${userId}/role`, { role: newRole });
+                    showToast('Đã đổi quyền', 'success');
+                    loadUsers(currentPage, currentSearch);
+                } catch (err) {
+                    showToast(err.message, 'error');
+                }
+            });
+        });
+
+        tbody.querySelectorAll('.edit-quota').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const userId = btn.dataset.id;
+                const maxRequests = prompt('Nhập quota mới (số lần/ngày):', '10');
+                if (!maxRequests || isNaN(maxRequests) || parseInt(maxRequests) < 1) return;
+                try {
+                    await api.put(`/api/v1/admin/users/${userId}/quota`, { max_requests: parseInt(maxRequests) });
+                    showToast('Đã cập nhật quota', 'success');
+                } catch (err) {
+                    showToast(err.message, 'error');
+                }
+            });
+        });
+    }
+
+    searchBtn.addEventListener('click', () => {
+        currentSearch = searchInput.value.trim();
+        currentPage = 1;
+        loadUsers(currentPage, currentSearch);
+    });
+    searchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            currentSearch = searchInput.value.trim();
+            currentPage = 1;
+            loadUsers(currentPage, currentSearch);
+        }
+    });
+
+    prevBtn.addEventListener('click', () => { if (currentPage > 1) { currentPage--; loadUsers(currentPage, currentSearch); } });
+    nextBtn.addEventListener('click', () => { currentPage++; loadUsers(currentPage, currentSearch); });
+
+    function formatDate(d) {
+        if (!d) return '—';
+        return new Date(d).toLocaleDateString('vi-VN', { year: 'numeric', month: '2-digit', day: '2-digit' });
+    }
+
+    function escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str || '';
+        return div.innerHTML;
+    }
+
+    loadUsers(1, '');
+})();
+</script>
+{% endblock %}

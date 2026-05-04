@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block title %}Hoạt động hệ thống — Admin{% endblock %}
+
+{% block content %}
+<div class="admin-layout">
+    <aside class="admin-sidebar">
+        <a href="/admin">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+            Dashboard
+        </a>
+        <a href="/admin/users">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+            Người dùng
+        </a>
+        <a href="/admin/logs" class="active">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+            Logs
+        </a>
+    </aside>
+
+    <div class="admin-content">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+            <h1 style="font-size:1.3rem; font-weight:700; margin:0;">Activity Logs</h1>
+            <button id="exportBtn" class="btn btn-outline btn-sm">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+                Xuất CSV
+            </button>
+        </div>
+
+        <div class="filter-bar">
+            <select id="filterSeverity">
+                <option value="">Tất cả mức độ</option>
+                <option value="INFO">INFO</option>
+                <option value="WARNING">WARNING</option>
+                <option value="ERROR">ERROR</option>
+            </select>
+            <select id="filterEventType">
+                <option value="">Tất cả sự kiện</option>
+                <option value="login_success">Đăng nhập thành công</option>
+                <option value="login_failed">Đăng nhập thất bại</option>
+                <option value="register">Đăng ký</option>
+                <option value="dxf_upload">Tải file DXF</option>
+                <option value="analysis_start">Bắt đầu phân tích</option>
+                <option value="analysis_complete">Hoàn thành phân tích</option>
+                <option value="analysis_failed">Phân tích thất bại</option>
+                <option value="quota_exceeded">Vượt quota</option>
+                <option value="account_locked">Tài khoản bị khóa</option>
+                <option value="role_changed">Đổi quyền</option>
+            </select>
+            <input type="date" id="filterDateFrom" title="Từ ngày">
+            <input type="date" id="filterDateTo" title="Đến ngày">
+            <button id="filterApplyBtn" class="btn btn-primary btn-sm">Lọc</button>
+        </div>
+
+        <div style="overflow-x:auto;">
+            <table class="history-table" id="logsTable">
+                <thead>
+                    <tr>
+                        <th>Thời gian</th>
+                        <th>User ID</th>
+                        <th>Loại sự kiện</th>
+                        <th>Mức độ</th>
+                        <th>IP</th>
+                        <th>Chi tiết</th>
+                    </tr>
+                </thead>
+                <tbody id="logsTableBody">
+                    <tr><td colspan="6"><div class="loading-state"><div class="spinner"></div></div></td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="pagination hidden" id="logsPagination">
+            <button class="btn btn-outline btn-sm" id="logsPrev">← Trước</button>
+            <span id="logsPageInfo"></span>
+            <button class="btn btn-outline btn-sm" id="logsNext">Sau →</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+(function() {
+    const tbody = document.getElementById('logsTableBody');
+    const pagination = document.getElementById('logsPagination');
+    const prevBtn = document.getElementById('logsPrev');
+    const nextBtn = document.getElementById('logsNext');
+    const pageInfo = document.getElementById('logsPageInfo');
+    const exportBtn = document.getElementById('exportBtn');
+    const filterApplyBtn = document.getElementById('filterApplyBtn');
+
+    let currentPage = 1;
+    const pageSize = 50;
+
+    function getFilters() {
+        return {
+            severity: document.getElementById('filterSeverity').value,
+            event_type: document.getElementById('filterEventType').value,
+            date_from: document.getElementById('filterDateFrom').value,
+            date_to: document.getElementById('filterDateTo').value,
+        };
+    }
+
+    async function loadLogs(page) {
+        tbody.innerHTML = '<tr><td colspan="6"><div class="loading-state"><div class="spinner"></div></div></td></tr>';
+        pagination.classList.add('hidden');
+
+        const filters = getFilters();
+        let url = `/api/v1/admin/logs?page=${page}&page_size=${pageSize}`;
+        if (filters.severity) url += `&severity=${filters.severity}`;
+        if (filters.event_type) url += `&event_type=${filters.event_type}`;
+
+        try {
+            const logs = await api.get(url);
+            if (!logs.length) {
+                tbody.innerHTML = '<tr><td colspan="6"><div class="empty-state"><h3>Không có log nào</h3></div></td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = logs.map(l => `
+                <tr>
+                    <td>${formatDate(l.created_at)}</td>
+                    <td>${l.user_id ?? '—'}</td>
+                    <td><code>${escapeHtml(l.event_type)}</code></td>
+                    <td><span style="font-weight:600; color:${l.severity === 'ERROR' ? 'var(--color-danger)' : l.severity === 'WARNING' ? 'var(--color-warning)' : 'var(--color-success)'};">${escapeHtml(l.severity)}</span></td>
+                    <td>${escapeHtml(l.ip_address || '—')}</td>
+                    <td style="max-width:200px; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(JSON.stringify(l.details || {}).slice(0, 80))}</td>
+                </tr>
+            `).join('');
+
+            pagination.classList.remove('hidden');
+            pageInfo.textContent = `Trang ${page}`;
+            prevBtn.classList.toggle('hidden', page <= 1);
+            nextBtn.classList.toggle('hidden', logs.length < pageSize);
+        } catch (err) {
+            tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state"><h3>Lỗi</h3><p>${escapeHtml(err.message)}</p></div></td></tr>`;
+        }
+    }
+
+    filterApplyBtn.addEventListener('click', () => { currentPage = 1; loadLogs(currentPage); });
+
+    exportBtn.addEventListener('click', async () => {
+        const filters = getFilters();
+        const from = filters.date_from || new Date(Date.now() - 30*86400000).toISOString().split('T')[0];
+        const to = filters.date_to || new Date().toISOString().split('T')[0];
+        window.location.href = `/api/v1/admin/logs/export?date_from=${from}&date_to=${to}`;
+    });
+
+    prevBtn.addEventListener('click', () => { if (currentPage > 1) { currentPage--; loadLogs(currentPage); } });
+    nextBtn.addEventListener('click', () => { currentPage++; loadLogs(currentPage); });
+
+    function formatDate(d) {
+        if (!d) return '—';
+        return new Date(d).toLocaleString('vi-VN');
+    }
+
+    function escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str || '';
+        return div.innerHTML;
+    }
+
+    loadLogs(1);
+})();
+</script>
+{% endblock %}

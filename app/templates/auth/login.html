@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block title %}Đăng nhập — AI Vision Drawing Checker{% endblock %}
+
+{% block content %}
+<div class="auth-container">
+    <div class="auth-card">
+        <h1 class="auth-title">Đăng nhập</h1>
+        <p class="auth-subtitle">Chào mừng trở lại! Vui lòng đăng nhập để tiếp tục.</p>
+
+        <div id="authError" class="auth-error hidden"></div>
+
+        <form id="loginForm" novalidate>
+            <div class="form-group">
+                <label class="form-label" for="email">Email</label>
+                <input class="form-input" type="email" id="email" name="email" placeholder="you@example.com" required autocomplete="email">
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="password">Mật khẩu</label>
+                <input class="form-input" type="password" id="password" name="password" placeholder="••••••••" required minlength="8" autocomplete="current-password">
+            </div>
+
+            <button type="submit" id="loginBtn" class="btn btn-primary btn-block btn-lg">
+                <span id="loginBtnText">Đăng nhập</span>
+                <span id="loginBtnSpinner" class="spinner hidden"></span>
+            </button>
+        </form>
+
+        <div class="auth-links">
+            <p>Chưa có tài khoản? <a href="/register">Đăng ký ngay</a></p>
+            <p><a href="#" onclick="alert('Vui lòng liên hệ Admin để đặt lại mật khẩu.')">Quên mật khẩu?</a></p>
+        </div>
+
+        {% if auth_mode and auth_mode != 'local' %}
+        <div style="margin-top:1rem; text-align:center;">
+            <p class="form-hint">Hoặc đăng nhập với</p>
+            <div style="display:flex; gap:0.75rem; justify-content:center; margin-top:0.75rem;">
+                <a href="/api/v1/auth/oauth/google" class="btn btn-outline">Google</a>
+                <a href="/api/v1/auth/oauth/github" class="btn btn-outline">GitHub</a>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+(function() {
+    const form = document.getElementById('loginForm');
+    const btn = document.getElementById('loginBtn');
+    const btnText = document.getElementById('loginBtnText');
+    const btnSpinner = document.getElementById('loginBtnSpinner');
+    const errEl = document.getElementById('authError');
+
+    function setLoading(loading) {
+        btn.disabled = loading;
+        btnText.classList.toggle('hidden', loading);
+        btnSpinner.classList.toggle('hidden', !loading);
+    }
+
+    function showError(msg) {
+        errEl.textContent = msg || 'Đăng nhập thất bại. Vui lòng thử lại.';
+        errEl.classList.remove('hidden');
+    }
+
+    function hideError() {
+        errEl.classList.add('hidden');
+    }
+
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        hideError();
+        if (typeof clearFieldErrors === 'function') {
+            clearFieldErrors(form);
+        }
+        // Also remove input-error class from all inputs
+        form.querySelectorAll('.form-input').forEach(el => el.classList.remove('input-error'));
+
+        const email = document.getElementById('email').value.trim();
+        const password = document.getElementById('password').value;
+
+        // Client-side validation
+        let valid = true;
+        if (!email) {
+            if (typeof showFieldError === 'function') {
+                showFieldError(document.getElementById('email'), 'Vui lòng nhập email');
+            }
+            document.getElementById('email').classList.add('input-error');
+            valid = false;
+        } else if (typeof validateEmail === 'function' && !validateEmail(email)) {
+            if (typeof showFieldError === 'function') {
+                showFieldError(document.getElementById('email'), 'Email không đúng định dạng');
+            }
+            document.getElementById('email').classList.add('input-error');
+            valid = false;
+        }
+        if (!password) {
+            if (typeof showFieldError === 'function') {
+                showFieldError(document.getElementById('password'), 'Vui lòng nhập mật khẩu');
+            }
+            document.getElementById('password').classList.add('input-error');
+            valid = false;
+        } else if (password.length < 8) {
+            if (typeof showFieldError === 'function') {
+                showFieldError(document.getElementById('password'), 'Mật khẩu tối thiểu 8 ký tự');
+            }
+            document.getElementById('password').classList.add('input-error');
+            valid = false;
+        }
+        if (!valid) return;
+
+        setLoading(true);
+        try {
+            const data = await api.post('/api/v1/auth/login', { email, password });
+            window.location.href = data.redirect_url || '/';
+        } catch (err) {
+            showError(err && err.message);
+        } finally {
+            setLoading(false);
+        }
+    });
+})();
+</script>
+{% endblock %}

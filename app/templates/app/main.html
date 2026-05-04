@@ -1,0 +1,370 @@
+{% extends "base.html" %}
+{% block title %}Phân tích bản vẽ — AI Vision Drawing Checker{% endblock %}
+
+{% block content %}
+<div class="app-layout" id="appLayout">
+    <!-- Left Panel: Drawing Viewer / Upload Zone -->
+    <div class="panel-drawing" id="drawingPanel">
+        <div class="panel-drawing-header">
+            <span id="drawingFilename">Chưa chọn file</span>
+            <div class="drawing-metadata" id="drawingMetadata"></div>
+        </div>
+        <div id="drawingContainer" class="drawing-container">
+            <!-- Upload Zone (initial state) -->
+            <div id="uploadZone" class="upload-zone">
+                <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+                </svg>
+                <span class="upload-text">Kéo & thả file DXF vào đây<br>hoặc click để chọn file</span>
+                <span class="upload-hint">Chỉ hỗ trợ .dxf, tối đa 50MB</span>
+                <input type="file" id="fileInput" accept=".dxf" class="hidden">
+            </div>
+            <!-- Loading State -->
+            <div id="loadingState" class="loading-state hidden">
+                <div class="spinner spinner-lg"></div>
+                <span>Tải file lên...</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Right Panel: Type Confirmation / Progress / Results -->
+    <div class="panel-results" id="resultsPanel">
+        <div class="panel-results-header">Kết quả phân tích</div>
+
+        <!-- Type Confirmation (step 1 after upload) -->
+        <div id="typeConfirmation" class="type-confirmation hidden">
+            <div class="type-prediction">
+                <p id="typePredictionText"></p>
+                <span id="typeConfidence" class="type-confidence"></span>
+            </div>
+            <p style="font-size:0.8rem; color:var(--color-text-secondary);">Chọn loại bản vẽ để bắt đầu phân tích:</p>
+            <div id="typeButtons" style="display:flex; gap:0.5rem; justify-content:center; flex-wrap:wrap;">
+                <button class="btn btn-primary btn-sm" data-type="Cơ khí (Mechanical)">Cơ khí</button>
+                <button class="btn btn-outline btn-sm" data-type="Kiến trúc (Architectural)">Kiến trúc</button>
+                <button class="btn btn-outline btn-sm" data-type="Điện (Electrical)">Điện</button>
+                <button class="btn btn-outline btn-sm" data-type="Kết cấu (Structural)">Kết cấu</button>
+                <button class="btn btn-outline btn-sm" data-type="P&ID (Process)">P&ID</button>
+                <button class="btn btn-outline btn-sm" data-type="Khác (Other)">Khác</button>
+            </div>
+        </div>
+
+        <!-- Progress State (step 2: analysis running) -->
+        <div id="progressState" class="progress-bar-container hidden">
+            <div class="progress-bar">
+                <div class="progress-bar-fill" id="progressFill" style="width: 0%;"></div>
+            </div>
+            <p class="progress-step" id="progressStep">Đang chuẩn bị...</p>
+        </div>
+
+        <!-- Results Display (step 3: completed) -->
+        <div id="resultsScroll" class="results-scroll hidden">
+            <div id="resultsContent"></div>
+        </div>
+
+        <!-- Error Display -->
+        <div id="errorState" class="empty-state hidden">
+            <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-danger)" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/>
+            </svg>
+            <h3>Phân tích thất bại</h3>
+            <p id="errorMessage"></p>
+        </div>
+
+        <!-- Chat Input (for post-analysis RAG chat) -->
+        <div id="chatInputArea" class="chat-input-area hidden">
+            <input type="text" id="chatInput" placeholder="Hỏi về tiêu chuẩn ISO liên quan đến bản vẽ..." autocomplete="off">
+            <button id="chatSendBtn" class="btn btn-primary btn-sm">Gửi</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="/static/js/websocket.js"></script>
+<script>
+(function() {
+    // ----- State -----
+    let currentTaskId = null;
+    let analysisComplete = false;
+    let ws = null;
+
+    // ----- DOM References -----
+    const uploadZone = document.getElementById('uploadZone');
+    const fileInput = document.getElementById('fileInput');
+    const loadingState = document.getElementById('loadingState');
+    const drawingContainer = document.getElementById('drawingContainer');
+    const drawingFilename = document.getElementById('drawingFilename');
+    const drawingMetadata = document.getElementById('drawingMetadata');
+    const typeConfirmation = document.getElementById('typeConfirmation');
+    const typePredictionText = document.getElementById('typePredictionText');
+    const typeConfidence = document.getElementById('typeConfidence');
+    const typeButtons = document.getElementById('typeButtons');
+    const progressState = document.getElementById('progressState');
+    const progressFill = document.getElementById('progressFill');
+    const progressStep = document.getElementById('progressStep');
+    const resultsScroll = document.getElementById('resultsScroll');
+    const resultsContent = document.getElementById('resultsContent');
+    const errorState = document.getElementById('errorState');
+    const errorMessage = document.getElementById('errorMessage');
+    const chatInputArea = document.getElementById('chatInputArea');
+    const chatInput = document.getElementById('chatInput');
+    const chatSendBtn = document.getElementById('chatSendBtn');
+
+    // ----- Upload: Drag & Drop -----
+    uploadZone.addEventListener('click', () => fileInput.click());
+    uploadZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        uploadZone.classList.add('drag-over');
+    });
+    uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('drag-over'));
+    uploadZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        uploadZone.classList.remove('drag-over');
+        if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+    });
+    fileInput.addEventListener('change', () => {
+        if (fileInput.files.length) handleFile(fileInput.files[0]);
+    });
+
+    async function handleFile(file) {
+        if (!file.name.toLowerCase().endsWith('.dxf')) {
+            showToast('Chỉ hỗ trợ file .dxf', 'error');
+            return;
+        }
+        if (file.size > 50 * 1024 * 1024) {
+            showToast('File quá lớn (tối đa 50MB)', 'error');
+            return;
+        }
+
+        // Show loading
+        uploadZone.classList.add('hidden');
+        loadingState.classList.remove('hidden');
+        resetResults();
+
+        try {
+            const formData = new FormData();
+            formData.append('file', file);
+            const data = await api.postForm('/api/v1/analysis/upload', formData);
+            currentTaskId = data.task_id;
+            drawingFilename.textContent = file.name;
+
+            // Hide loading, show metadata + type confirmation
+            loadingState.classList.add('hidden');
+            drawEmptyState('Bản vẽ đang được chuẩn bị...');
+
+            // Display metadata badges
+            if (data.dxf_metadata) {
+                const m = data.dxf_metadata;
+                drawingMetadata.innerHTML = [
+                    m.entity_count ? `<span class="metadata-badge">${m.entity_count} entities</span>` : '',
+                    m.dimension_count ? `<span class="metadata-badge">${m.dimension_count} dims</span>` : '',
+                    m.text_count ? `<span class="metadata-badge">${m.text_count} texts</span>` : '',
+                    m.layer_count ? `<span class="metadata-badge">${m.layer_count} layers</span>` : '',
+                    m.dxf_version ? `<span class="metadata-badge">${m.dxf_version}</span>` : '',
+                ].join('');
+            } else {
+                drawingMetadata.innerHTML = '';
+            }
+
+            // Show type confirmation
+            if (data.predicted_drawing_type) {
+                typePredictionText.innerHTML = `<strong>Dự đoán:</strong> ${escapeHtml(data.predicted_drawing_type)}<br><small>${escapeHtml(data.prediction_reasoning || '')}</small>`;
+                const confidenceClass = data.prediction_confidence > 0.7 ? 'high' : (data.prediction_confidence > 0.4 ? 'medium' : 'low');
+                typeConfidence.textContent = `${Math.round(data.prediction_confidence * 100)}%`;
+                typeConfidence.className = `type-confidence ${confidenceClass}`;
+                // Highlight predicted type button
+                typeButtons.querySelectorAll('button').forEach(btn => {
+                    btn.classList.toggle('btn-primary', btn.dataset.type === data.predicted_drawing_type);
+                    btn.classList.toggle('btn-outline', btn.dataset.type !== data.predicted_drawing_type);
+                });
+            }
+            typeConfirmation.classList.remove('hidden');
+        } catch (err) {
+            loadingState.classList.add('hidden');
+            uploadZone.classList.remove('hidden');
+            showToast(err.message || 'Tải lên thất bại', 'error');
+        }
+    }
+
+    // ----- Type Confirmation Buttons -----
+    typeButtons.addEventListener('click', async (e) => {
+        const btn = e.target.closest('button');
+        if (!btn) return;
+        const drawingType = btn.dataset.type;
+
+        typeConfirmation.classList.add('hidden');
+        progressState.classList.remove('hidden');
+        updateProgress(0, 'Đang bắt đầu phân tích...');
+
+        try {
+            // Fetch WS token + confirm type in parallel
+            const [wsTokenRes, confirmRes] = await Promise.all([
+                api.get('/api/v1/auth/ws-token'),
+                api.post(`/api/v1/analysis/${currentTaskId}/confirm-type`, { drawing_type: drawingType })
+            ]);
+
+            // Start WebSocket for real-time progress
+            connectWebSocket(currentTaskId, wsTokenRes.ws_token);
+        } catch (err) {
+            progressState.classList.add('hidden');
+            showError(err.message || 'Không thể bắt đầu phân tích');
+        }
+    });
+
+    // ----- WebSocket Connection -----
+    function connectWebSocket(taskId, wsToken) {
+        ws = new AnalysisWebSocket();
+        ws.connect(taskId, wsToken, {
+            onProgress: (data) => {
+                const stepMap = {
+                    'parse': [10, 'Đang đọc file DXF...'],
+                    'render': [20, 'Đang render bản vẽ SVG...'],
+                    'analysis': [35, 'Đang phân tích bản vẽ...'],
+                    'dimension': [50, 'Đang kiểm tra kích thước...'],
+                    'annotation': [65, 'Đang kiểm tra ghi chú...'],
+                    'standard': [80, 'Đang kiểm tra tiêu chuẩn...'],
+                    'self_check': [90, 'Đang tự đánh giá...'],
+                };
+                const [pct, msg] = stepMap[data.step] || [50, data.message || 'Đang xử lý...'];
+                updateProgress(pct, msg);
+            },
+
+            onSvgReady: (data) => {
+                drawSvg(data.svg_content || data.svg_base64);
+            },
+
+            onResult: (data) => {
+                updateProgress(100, 'Hoàn thành!');
+                progressState.classList.add('hidden');
+                resultsScroll.classList.remove('hidden');
+                chatInputArea.classList.remove('hidden');
+                analysisComplete = true;
+
+                const report = data.report || 'Không có báo cáo';
+                resultsContent.innerHTML = renderMarkdown(report);
+
+                // Update quota badge if present
+                updateQuotaBadge(data.quota);
+            },
+
+            onError: (data) => {
+                progressState.classList.add('hidden');
+                showError(data.message || 'Lỗi phân tích bản vẽ');
+            },
+
+            onClose: () => {
+                if (!analysisComplete) {
+                    // WebSocket closed before completion — fallback to polling
+                    startPolling(taskId);
+                }
+            }
+        });
+    }
+
+    // ----- Polling Fallback -----
+    function startPolling(taskId) {
+        const interval = setInterval(async () => {
+            try {
+                const data = await api.get(`/api/v1/analysis/${taskId}/status`);
+                if (data.status === 'completed' && data.result) {
+                    clearInterval(interval);
+                    progressState.classList.add('hidden');
+                    resultsScroll.classList.remove('hidden');
+                    chatInputArea.classList.remove('hidden');
+                    analysisComplete = true;
+                    resultsContent.innerHTML = renderMarkdown(data.result.report || '');
+                    updateProgress(100, 'Hoàn thành!');
+                } else if (data.status === 'failed') {
+                    clearInterval(interval);
+                    showError(data.error_message || 'Phân tích thất bại');
+                } else {
+                    updateProgress(50, `Trạng thái: ${data.status}`);
+                }
+            } catch (e) {
+                clearInterval(interval);
+                showError('Mất kết nối. Vui lòng thử lại.');
+            }
+        }, 2000);
+    }
+
+    // ----- Chat (Post-Analysis RAG) -----
+    async function sendChatMessage() {
+        const msg = chatInput.value.trim();
+        if (!msg || !currentTaskId) return;
+        chatInput.value = '';
+        chatSendBtn.disabled = true;
+
+        const msgDiv = document.createElement('div');
+        msgDiv.innerHTML = `<strong>Bạn:</strong> ${escapeHtml(msg)}`;
+        resultsContent.appendChild(msgDiv);
+
+        try {
+            const data = await api.post(`/api/v1/analysis/${currentTaskId}/chat`, { message: msg });
+            const replyDiv = document.createElement('div');
+            replyDiv.style.marginTop = '0.5rem';
+            replyDiv.innerHTML = `<strong>AI:</strong> ${renderMarkdown(data.reply)}`;
+            resultsContent.appendChild(replyDiv);
+            resultsScroll.scrollTop = resultsScroll.scrollHeight;
+        } catch (err) {
+            showToast(err.message || 'Không thể gửi câu hỏi', 'error');
+        } finally {
+            chatSendBtn.disabled = false;
+        }
+    }
+
+    chatSendBtn.addEventListener('click', sendChatMessage);
+    chatInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') sendChatMessage();
+    });
+
+    // ----- UI Helpers -----
+    function updateProgress(pct, msg) {
+        progressFill.style.width = pct + '%';
+        progressStep.textContent = msg || `Đang xử lý (${pct}%)...`;
+    }
+
+    function drawSvg(svgContent) {
+        drawingContainer.innerHTML = '<div class="drawing-container-inner">' + svgContent + '</div>';
+    }
+
+    function drawEmptyState(msg) {
+        drawingContainer.innerHTML = `<div class="empty-state"><p>${msg}</p></div>`;
+    }
+
+    function showError(msg) {
+        errorState.classList.remove('hidden');
+        errorMessage.textContent = msg;
+        chatInputArea.classList.add('hidden');
+    }
+
+    function resetResults() {
+        analysisComplete = false;
+        typeConfirmation.classList.add('hidden');
+        progressState.classList.add('hidden');
+        resultsScroll.classList.add('hidden');
+        errorState.classList.add('hidden');
+        chatInputArea.classList.add('hidden');
+        resultsContent.innerHTML = '';
+        if (ws) {
+            ws.disconnect();
+            ws = null;
+        }
+    }
+
+    function updateQuotaBadge(quota) {
+        if (!quota) return;
+        const usedEl = document.getElementById('quotaUsed');
+        if (usedEl) usedEl.textContent = quota.used;
+        const badge = document.getElementById('quotaBadge');
+        if (badge && quota.remaining <= 2) badge.classList.add('low');
+    }
+
+    function escapeHtml(str) {
+        if (!str) return '';
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+})();
+</script>
+{% endblock %}
